@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SoundCloud Downloader</title>
+  <link rel="icon" href="icons/icon-32.png">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <main>
+    <header>
+      <img src="icons/icon-48.png" alt="" width="32" height="32">
+      <h1>SoundCloud Downloader</h1>
+      <span id="version" class="muted"></span>
+    </header>
+
+    <section id="perm-banner" class="banner" hidden>
+      <p>This extension needs your permission to talk to SoundCloud.</p>
+      <button id="perm-btn" class="primary">Allow access to SoundCloud</button>
+    </section>
+
+    <form id="form" autocomplete="off">
+      <label for="link">SoundCloud link</label>
+      <input id="link" type="url" placeholder="Paste a track, playlist or profile link" spellcheck="false">
+
+      <label for="folder">Save to</label>
+      <div class="inline">
+        <span class="muted">Downloads&nbsp;/</span>
+        <input id="folder" type="text" spellcheck="false">
+      </div>
+
+      <label for="workers">Parallel downloads</label>
+      <div class="inline">
+        <select id="workers"></select>
+        <label class="check"><input id="redownload" type="checkbox"> Download again even if already downloaded</label>
+      </div>
+
+      <label>Account</label>
+      <div class="inline wrap" id="account">
+        <span id="account-text" class="muted">Checking…</span>
+        <label class="check" id="use-login-wrap" hidden><input id="use-login" type="checkbox"> Use it</label>
+        <button type="button" id="likes-btn" hidden>Download my likes</button>
+        <a id="signin-link" href="https://soundcloud.com/signin" target="_blank" rel="noopener" hidden>Sign in at soundcloud.com</a>
+        <button type="button" id="refresh-btn" class="link">Refresh</button>
+      </div>
+
+      <div class="actions">
+        <button type="button" id="stop-btn" hidden>Stop</button>
+        <button type="submit" id="go-btn" class="primary">Download MP3s</button>
+      </div>
+    </form>
+
+    <section id="confirm" class="panel" hidden>
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-body"></p>
+      <div class="actions">
+        <button type="button" id="confirm-no">Cancel</button>
+        <button type="button" id="confirm-yes" class="primary">Download now</button>
+      </div>
+    </section>
+
+    <progress id="bar" value="0" max="1"></progress>
+    <p id="status">Paste a track, playlist or profile link.</p>
+    <pre id="log" aria-live="polite"></pre>
+
+    <section id="report" class="panel" hidden>
+      <h2 id="report-title"></h2>
+      <p class="muted">This list is also saved as failed_downloads.txt in the download folder.</p>
+      <pre id="report-body"></pre>
+      <div class="actions">
+        <button type="button" id="retry-btn" class="primary">Retry failed</button>
+        <button type="button" id="copy-btn">Copy list</button>
+        <button type="button" id="show-btn">Show in folder</button>
+      </div>
+    </section>
+
+    <footer class="muted">
+      Tip: right-click any SoundCloud link and choose “Download as MP3”. Please only download music you have the right to download.
+    </footer>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

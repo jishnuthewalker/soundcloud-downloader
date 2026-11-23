@@ -24,6 +24,10 @@ When it says *All set!*, the app opens. After that, open **SoundCloud Downloader
 
 **Prefer a download?** Get `SoundCloud-Downloader.zip` from the [latest release](../../releases/latest) and follow *READ ME FIRST.txt* inside it.
 
+## Browser extension (in development)
+
+`extension/` contains a Chrome + Firefox version of the same features. Nothing to install besides the extension, and sign-in uses your browser's SoundCloud login. It isn't published yet. See [extension/README.md](extension/README.md).
+
 ## How it works
 
 - Each setup file (`src/launcher_*`) installs a private copy of Python (via [uv](https://github.com/astral-sh/uv)), [scdl](https://github.com/scdl-org/scdl), yt-dlp and ffmpeg into a single per-user folder, then adds an app or shortcut.

@@ -86,6 +86,20 @@ ffmpeg comes from the `imageio-ffmpeg` wheel and is linked as `bin/ffmpeg` on `P
 - Known limits: Safari is blocked by macOS privacy protections, and Chrome/Edge on Windows lock their cookies.
 - The manual paste-token path is the fallback.
 
+## Browser extension (`extension/`)
+
+A separate Chrome + Firefox (Manifest V3) port of the same features. It has no server: the extension's host permissions let it call SoundCloud directly, and ffmpeg.wasm does the MP3 conversion. Commands, the code map and its known pitfalls are in `extension/README.md`. In short:
+
+```bash
+cd extension && npm install && npm run build      # → dist/extension/{chrome,firefox}/
+node test/e2e.mjs chrome|firefox [url]            # real download via test browsers in /tmp/scd-browsers
+node test/lookup.mjs [url ...]                    # lookups only
+```
+
+- `extension/src/lib/soundcloud.js` re-implements what yt-dlp does for SoundCloud, so SoundCloud API changes have to be fixed there by hand.
+- Root `python3 build.py` deletes all of `dist/`, including `dist/extension/`, so run `npm run build` again afterwards.
+- The extension has its own version number, in `extension/package.json`.
+
 ## Conventions
 
 - Text users see is written for non-technical people. Keep error messages actionable, and update `src/READ ME FIRST.txt` (which ships inside the zip) when the user-facing flow changes.
