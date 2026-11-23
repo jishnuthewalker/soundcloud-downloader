@@ -14,5 +14,6 @@
   },
   "devDependencies": {
     "puppeteer": "25.18.1"
-  }
+  },
+  "license": "GPL-3.0-or-later"
 }

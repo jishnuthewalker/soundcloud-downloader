@@ -7,6 +7,9 @@ confirm what it found, and it downloads everything as MP3. Playlists download
 several tracks at once. When it finishes, it lists any songs that failed, with
 the reason, and lets you retry just those.
 
+Optional Soulseek: also look for a lossless FLAC of every track on the Soulseek network and
+save it in a "FLAC" folder next to the MP3s.
+
 Optional sign-in: connect your SoundCloud account (read from the browser you're
 already signed in with, or by pasting a token) to download your likes, private
 tracks you can access, and full Go+ tracks if you subscribe.
@@ -38,17 +41,19 @@ import sysconfig
 import tarfile
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 import webbrowser
 import zipfile
 import zlib
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-__version__ = "2.1.0"     # bump this for every release (build.py reads it)
+__version__ = "2.2.0"     # bump this for every release (build.py reads it)
 REPO = "jishnuthewalker/soundcloud-downloader"   # GitHub repo that publishes updates
 # SCD_RELEASE_URL lets you test updates from a local folder or use a mirror.
 RELEASE_URL = (os.environ.get("SCD_RELEASE_URL") or f"https://github.com/{REPO}/releases/latest/download").rstrip("/") + "/"
@@ -61,7 +66,7 @@ NON_MP3_AUDIO = {".m4a", ".opus", ".ogg", ".oga", ".aac", ".webm", ".wav", ".fla
 MAX_ART = 1000             # album art is shrunk to fit within MAX_ART x MAX_ART (rekordbox-friendly)
 REPORT_NAME = "failed_downloads.txt"
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-PACKAGES = ["scdl", "yt-dlp", "imageio-ffmpeg"]
+PACKAGES = ["scdl", "yt-dlp", "imageio-ffmpeg", "aioslsk"]
 PYTHON_MINOR = "3.12"      # the private Python; patch releases are installed automatically
 SIGNIN_URL = "https://soundcloud.com/signin"
 
@@ -419,11 +424,14 @@ def probe(url, token=None):
         entries = data.get("entries") or []
         # Titles are often missing from a quick playlist listing; failures get looked up later.
         titles = {i: e.get("title") for i, e in enumerate(entries, 1) if e and e.get("title")}
+        ids = {i: e.get("id") for i, e in enumerate(entries, 1) if e and e.get("id")}
         return {"title": data.get("title") or "Playlist", "count": len(entries), "playlist": True,
-                "by": data.get("uploader") or "", "titles": titles}
+                "by": data.get("uploader") or "", "titles": titles, "ids": ids}
     title = data.get("title") or "Track"
     return {"title": title, "count": 1, "playlist": False,
-            "by": data.get("uploader") or "", "titles": {1: title}}
+            "by": data.get("uploader") or "", "titles": {1: title}, "ids": {1: data.get("id")},
+            "meta": {1: {"title": title, "username": data.get("uploader") or "",
+                         "artist": data.get("artist") or "", "duration": data.get("duration")}}}
 
 
 def lookup_title(url, item=None, token=None):
@@ -513,14 +521,15 @@ def fix_cover(path):
     if isinstance(w, int) and w <= MAX_ART and h <= MAX_ART and codec == "mjpeg":
         return path, "ok", None
 
-    tmp = path.with_name(path.stem + ".artfix.tmp.mp3")
+    tmp = path.with_name(path.stem + ".artfix.tmp" + path.suffix)
     vf = (f"scale=w='min({MAX_ART},iw)':h='min({MAX_ART},ih)'"
           f":force_original_aspect_ratio=decrease,format=yuvj420p")
     r = run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(path),
              "-map", "0:a:0", "-map", "0:v:0", "-c:a", "copy",
              "-vf", vf, "-c:v", "mjpeg", "-q:v", "2", "-disposition:v:0", "attached_pic",
              "-metadata:s:v", "title=Album cover", "-metadata:s:v", "comment=Cover (front)",
-             "-map_metadata", "0", "-id3v2_version", "3", str(tmp)])
+             "-map_metadata", "0", *(["-id3v2_version", "3"] if path.suffix.lower() == ".mp3" else []),
+             str(tmp)])
     if r.returncode == 0 and tmp.exists() and tmp.stat().st_size > 0:
         os.replace(tmp, path)
         return path, "resized", None
@@ -553,6 +562,310 @@ def open_folder(path):
         subprocess.Popen(["open", str(path)])
     else:
         subprocess.Popen(["xdg-open", str(path)])
+
+
+# ---------------------------------------------------------------- Soulseek (lossless FLAC)
+#
+# Optional: for every SoundCloud track, also search the Soulseek file-sharing network for a
+# FLAC of the same song and save it in a "FLAC" folder next to the MP3s. Uses aioslsk on its
+# own asyncio loop thread; worker threads call into it through run_coroutine_threadsafe.
+
+FLAC_FOLDER = "FLAC"
+SLSK_PORT = 61000                 # avoids the defaults of Nicotine+ (2234) and aioslsk (60000)
+SLSK_SEARCH_SECONDS = 12          # how long to collect search results
+SLSK_START_TIMEOUT = 120          # give up on a peer whose queue doesn't move within this
+SLSK_MAX_CANDIDATES = 3           # peers to try per track before giving up
+SLSK_DURATION_SLACK = 4           # seconds a FLAC's length may differ from SoundCloud's
+_NOISE = re.compile(r"\b(free\s*(download|dl)|out\s*now|premiere|exclusive|official(\s*(music\s*)?(video|audio))?|"
+                    r"hq|hd|320\s*(kbps)?|buy\s*(link)?|click\s*buy|download\s*link)\b", re.I)
+_STOP = {"the", "a", "an", "and", "of", "feat", "ft", "featuring", "x", "vs", "with", "original", "mix"}
+_VERSIONS = {"remix", "bootleg", "vip", "dub", "rework", "flip", "instrumental", "acapella", "live", "cover",
+             "edit", "remake", "mashup"}
+
+
+def words(text):
+    """Lower-case word list with accents removed (non-Latin scripts are kept)."""
+    text = unicodedata.normalize("NFKD", str(text or "").casefold())
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.findall(r"[^\W_]+", text)
+
+
+def safe_filename(name, fallback="untitled"):
+    """A file or folder name that's valid on Windows, macOS and Linux."""
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f]', "_", str(name or ""))
+    name = re.sub(r"\s+", " ", name).strip().strip(".").strip()
+    name = name[:120].rstrip(" .")
+    if not name or re.fullmatch(r"(con|prn|aux|nul|com\d|lpt\d)(\..*)?", name, re.I):
+        name = f"_{name}" if name else fallback
+    return name
+
+
+def track_identity(meta):
+    """(artist, title) for searching, from SoundCloud metadata."""
+    title = str(meta.get("title") or "")
+    artist = str(meta.get("artist") or "")
+    m = re.match(r"\s*(.+?)\s+[-–—]\s+(.+)$", title)
+    if m and not artist:
+        artist, title = m.group(1), m.group(2)
+    if not artist:
+        artist = str(meta.get("username") or "")
+    # Drop bracketed promo text like "[FREE DOWNLOAD]" and leftover promo words.
+    title = re.sub(r"[\[(][^\])]*[\])]", lambda g: "" if _NOISE.search(g.group(0)) else g.group(0), title)
+    title = _NOISE.sub("", title)
+    title = re.sub(r"\s+", " ", title).strip(" -–—|")
+    return artist.strip(), title
+
+
+def search_query(artist, title):
+    keep = [w for w in words(f"{artist} {title}") if w not in _STOP and len(w) > 1]
+    return " ".join(dict.fromkeys(keep))[:120]          # unique words, original order
+
+
+def score_flac(meta, artist, title, result, fd):
+    """How well a search result matches the SoundCloud track (higher is better), or None if it doesn't."""
+    remote = str(fd.filename)
+    if not remote.lower().endswith(".flac") or (fd.filesize or 0) < 2_000_000:
+        return None
+    parts = re.split(r"[\\/]+", remote)
+    base = words(re.sub(r"\.flac$", "", parts[-1], flags=re.I))
+    path = set(words(" ".join(parts)))
+    title_words = [w for w in words(title) if w not in _STOP] or words(title)
+    artist_words = [w for w in words(artist) if w not in _STOP] or words(artist)
+    if not title_words:
+        return None
+    title_hit = sum(w in base for w in title_words) / len(title_words)
+    artist_hit = sum(w in path for w in artist_words) / len(artist_words) if artist_words else 1.0
+    if title_hit < 0.8 or artist_hit < 0.5:
+        return None
+    # Don't swap a remix for the original or vice versa.
+    want = _VERSIONS & set(title_words)
+    have = _VERSIONS & set(base)
+    if want - have or have - want:
+        return None
+    duration_score = 0.5
+    try:
+        from aioslsk.protocol.primitives import AttributeKey
+        seconds = fd.get_attribute_map().get(AttributeKey.DURATION)
+    except Exception:
+        seconds = None
+    if seconds and meta.get("duration"):
+        if abs(float(seconds) - float(meta["duration"])) > SLSK_DURATION_SLACK:
+            return None
+        duration_score = 1.0
+    return (title_hit * 40 + artist_hit * 20 + duration_score * 20
+            + (12 if result.has_free_slots else 0)
+            - min(result.queue_size or 0, 50) * 0.3
+            + min((result.avg_speed or 0) / 1_000_000, 5) * 2)
+
+
+def track_metadata(info, token=None):
+    """{playlist index: {title, username, artist, duration}} for Soulseek matching."""
+    if info.get("meta"):
+        return info["meta"]
+    ids = {i: int(v) for i, v in (info.get("ids") or {}).items() if str(v).isdigit()}
+    if not ids:
+        return {}
+    from soundcloud import SoundCloud      # installed with scdl
+    client = SoundCloud(None, token)
+    by_id = {}
+    unique = list(dict.fromkeys(ids.values()))
+    for start in range(0, len(unique), 50):
+        for t in client.get_tracks(unique[start:start + 50]):
+            pub = getattr(t, "publisher_metadata", None)
+            by_id[t.id] = {"title": t.title, "username": getattr(t.user, "username", "") if t.user else "",
+                           "artist": getattr(pub, "artist", "") if pub else "",
+                           "duration": (t.duration or 0) / 1000 or None}
+    return {i: by_id[tid] for i, tid in ids.items() if tid in by_id}
+
+
+class SoulseekError(Exception):
+    pass
+
+
+class Soulseek:
+    """A logged-in Soulseek client living on its own asyncio loop thread."""
+
+    def __init__(self, username, password, share_dir=None, port=SLSK_PORT):
+        import asyncio
+        import logging
+        logging.getLogger("aioslsk").setLevel(logging.CRITICAL)   # peers failing to connect is normal noise
+        self.username, self.password, self.share_dir, self.port = username, password, share_dir, port
+        self.asyncio = asyncio
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self.loop.run_forever, name="soulseek", daemon=True)
+        self.thread.start()
+        self.client = None
+        self.staging = APP_DIR / "soulseek-incoming"
+        self._search_lock = threading.Lock()
+        self._last_search = 0.0
+        self._user_locks = defaultdict(threading.Lock)  # one download per peer at a time (etiquette)
+
+    def _call(self, coro, timeout):
+        return self.asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
+
+    def start(self):
+        shutil.rmtree(self.staging, ignore_errors=True)
+        self.staging.mkdir(parents=True, exist_ok=True)
+        self._call(self._start(), 90)
+        return self
+
+    async def _start(self):
+        from aioslsk.client import SoulSeekClient
+        from aioslsk.exceptions import AuthenticationError, ListeningConnectionFailedError
+        from aioslsk.settings import Settings, SharedDirectorySettingEntry
+        shares = [SharedDirectorySettingEntry(path=str(self.share_dir))] if self.share_dir else []
+        last_error = None
+        for port in range(self.port, self.port + 20, 2):
+            settings = Settings(
+                credentials={"username": self.username, "password": self.password},
+                network={"listening": {"port": port, "obfuscated_port": port + 1}, "upnp": {"enabled": True},
+                         "server": {"reconnect": {"auto": True, "timeout": 10}}},
+                shares={"download": str(self.staging), "directories": shares, "scan_on_start": bool(shares)},
+                transfers={"limits": {"upload_slots": 2}},
+            )
+            client = SoulSeekClient(settings)
+            try:
+                await client.start()
+            except ListeningConnectionFailedError as e:      # port in use: try the next one
+                last_error = e
+                await self._quiet_stop(client)
+                continue
+            except Exception as e:
+                await self._quiet_stop(client)
+                raise SoulseekError("Couldn't reach the Soulseek server. Check your internet connection.") from e
+            try:
+                async with self.asyncio.timeout(30):
+                    await client.login()
+            except AuthenticationError as e:
+                await self._quiet_stop(client)
+                reason = str(getattr(e, "reason", "") or "")
+                if "INVALIDPASS" in reason.upper():
+                    raise SoulseekError("Wrong Soulseek password for that username.") from e
+                raise SoulseekError(f"Soulseek refused the login ({reason or 'unknown reason'}).") from e
+            except Exception as e:
+                await self._quiet_stop(client)
+                raise SoulseekError("Soulseek didn't answer the login. Try again in a minute.") from e
+            self.client = client
+            return
+        raise SoulseekError(f"Couldn't open a network port for Soulseek ({last_error}).")
+
+    @staticmethod
+    async def _quiet_stop(client):
+        try:
+            await client.stop()
+        except Exception:
+            pass
+
+    def stop(self):
+        try:
+            if self.client:
+                self._call(self._quiet_stop(self.client), 15)
+        except Exception:
+            pass
+        self.loop.call_soon_threadsafe(self.loop.stop)
+
+    # ---- search
+
+    def search(self, query, seconds=SLSK_SEARCH_SECONDS):
+        """[(SearchResult, FileData)] for every unlocked file in the replies."""
+        with self._search_lock:                          # space searches out (etiquette)
+            wait = self._last_search + 2.0 - time.time()
+            if wait > 0:
+                time.sleep(wait)
+            self._last_search = time.time()
+        req = self._call(self.client.searches.search(query), 30)
+        time.sleep(seconds)
+        return self._call(self._collect(req), 30)
+
+    async def _collect(self, req):
+        found = [(r, fd) for r in list(req.results) for fd in list(r.shared_items)]
+        try:
+            self.client.searches.remove_request(req)
+        except (KeyError, ValueError):
+            pass
+        return found
+
+    def find_flacs(self, meta):
+        artist, title = track_identity(meta)
+        query = search_query(artist, title)
+        if not query:
+            return []
+        scored = []
+        for result, fd in self.search(query):
+            score = score_flac(meta, artist, title, result, fd)
+            if score is not None:
+                scored.append((score, result, fd))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        picks, users = [], set()
+        for score, result, fd in scored:                 # best file from each of the best peers
+            if result.username not in users:
+                users.add(result.username)
+                picks.append((result.username, fd.filename, fd.filesize))
+            if len(picks) >= SLSK_MAX_CANDIDATES:
+                break
+        return picks
+
+    # ---- download
+
+    def download(self, username, remote, dest, size):
+        """Download one file to dest. Raises SoulseekError if it can't be done in reasonable time."""
+        total = SLSK_START_TIMEOUT + max(300, (size or 0) / 100_000)     # allow ≥100 kB/s once started
+        with self._user_locks[username]:
+            return self._call(self._download(username, remote, Path(dest), total), total + 60)
+
+    async def _download(self, username, remote, dest, total_timeout):
+        from aioslsk.transfer.model import Transfer, TransferDirection
+        from aioslsk.transfer.state import TransferState
+        S = TransferState.State
+        part = self.staging / f"{abs(hash((username, remote)))}.flac.part"
+        part.unlink(missing_ok=True)
+        transfer = Transfer(username, remote, TransferDirection.DOWNLOAD)
+        transfer.local_path = str(part)
+        transfer = await self.client.transfers.add(transfer)
+        await self.client.transfers.queue(transfer)
+        began = time.monotonic()
+        try:
+            while True:
+                await self.asyncio.sleep(1)
+                state = transfer.state.VALUE
+                elapsed = time.monotonic() - began
+                if state == S.COMPLETE:
+                    break
+                if state in (S.FAILED, S.ABORTED):
+                    raise SoulseekError(transfer.fail_reason or "the other user cancelled it")
+                if transfer.bytes_transfered == 0 and elapsed > SLSK_START_TIMEOUT:
+                    raise SoulseekError("still waiting in the other user's queue")
+                if elapsed > total_timeout:
+                    raise SoulseekError("too slow")
+            got = Path(transfer.local_path or part)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(got), str(dest))
+            return dest
+        except BaseException:
+            leftover = transfer.local_path
+            try:
+                await self.client.transfers.remove(transfer)   # frees the peer's queue slot too
+            except Exception:
+                pass
+            for f in {leftover, str(part)}:
+                if f:
+                    Path(f).unlink(missing_ok=True)
+            raise
+
+    def fetch_flac(self, meta, dest):
+        """Find and download a FLAC for one track. Returns (path, peer) or raises SoulseekError."""
+        candidates = self.find_flacs(meta)
+        if not candidates:
+            raise SoulseekError("no matching FLAC found")
+        errors = []
+        for username, remote, size in candidates:
+            try:
+                return self.download(username, remote, dest, size), username
+            except SoulseekError as e:
+                errors.append(f"{username}: {e}")
+            except Exception as e:                       # a peer misbehaving shouldn't stop the run
+                errors.append(f"{username}: {type(e).__name__}")
+        raise SoulseekError("found, but couldn't download (" + "; ".join(errors[:3]) + ")")
 
 
 # ---------------------------------------------------------------- sign-in
@@ -923,24 +1236,37 @@ def main():
             self.sign_btn = ttk.Button(frm, command=self.sign_in_or_out)
             self.sign_btn.grid(row=3, column=2, sticky="ew", padx=(8, 0))
 
-            self.go = ttk.Button(frm, text="Download MP3s", command=self.start)
-            self.go.grid(row=4, column=1, columnspan=2, sticky="e", pady=(14, 0))
+            ttk.Label(frm, text="Soulseek").grid(row=4, column=0, sticky="w", pady=(8, 0))
+            self.slsk_on = tk.BooleanVar(value=bool(self.settings.get("slsk_enabled")))
+            self.slsk_check = ttk.Checkbutton(frm, variable=self.slsk_on, command=self.toggle_soulseek)
+            self.slsk_check.grid(row=4, column=1, sticky="w", pady=(8, 0))
+            self.slsk_btn = ttk.Button(frm, text="Settings…", command=self.open_soulseek)
+            self.slsk_btn.grid(row=4, column=2, sticky="ew", padx=(8, 0), pady=(8, 0))
+            self.slsk = None                  # Soulseek session, started on first use, kept while the app is open
+            self.slsk_key = None
+            self.slsk_lock = threading.Lock()
+            self.slsk_win = None
+
+            self.go = ttk.Button(frm, text="Download", command=self.start)
+            self.go.grid(row=5, column=1, columnspan=2, sticky="e", pady=(14, 0))
             root.bind("<Return>", lambda e: self.start())
 
             self.bar = ttk.Progressbar(frm, mode="determinate")
-            self.bar.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(12, 4))
+            self.bar.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(12, 4))
             self.status = tk.StringVar(value="Paste a track, playlist or profile link.")
-            ttk.Label(frm, textvariable=self.status).grid(row=6, column=0, columnspan=3, sticky="w")
+            ttk.Label(frm, textvariable=self.status).grid(row=7, column=0, columnspan=3, sticky="w")
 
             self.log = tk.Text(frm, height=10, state="disabled", wrap="word")
-            self.log.grid(row=7, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
-            frm.rowconfigure(7, weight=1)
+            self.log.grid(row=8, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
+            frm.rowconfigure(8, weight=1)
 
             self.fix_btn = ttk.Button(frm, text=f"Fix album art in a folder (max {MAX_ART}×{MAX_ART})…",
                                       command=self.fix_folder)
-            self.fix_btn.grid(row=8, column=0, columnspan=3, sticky="w", pady=(10, 0))
+            self.fix_btn.grid(row=9, column=0, columnspan=3, sticky="w", pady=(10, 0))
+            root.protocol("WM_DELETE_WINDOW", self.on_close)
 
             self.refresh_account()
+            self.refresh_soulseek()
             setup_ffmpeg()
             self.root.after(100, self.poll)
             if managed_install():           # never touch someone's own Python setup
@@ -986,7 +1312,7 @@ def main():
         def set_busy(self, busy, status=None):
             self.busy = busy
             state = "disabled" if busy else "normal"
-            for b in (self.go, self.fix_btn, self.sign_btn, self.likes_btn):
+            for b in (self.go, self.fix_btn, self.sign_btn, self.likes_btn, self.slsk_check, self.slsk_btn):
                 b.configure(state=state)
             if status:
                 self.status.set(status)
@@ -1059,6 +1385,189 @@ def main():
         @property
         def token(self):
             return self.settings.get("auth_token") or None
+
+        # ---- Soulseek
+
+        def slsk_ready(self):
+            return bool(self.settings.get("slsk_user") and self.settings.get("slsk_pass"))
+
+        def refresh_soulseek(self):
+            if self.slsk_on.get() and self.slsk_ready():
+                text = f"Also get lossless FLACs (as {self.settings['slsk_user']})"
+            elif self.slsk_on.get():
+                text = "Also get lossless FLACs (set up your Soulseek login first)"
+            else:
+                text = "Also look for lossless FLACs on Soulseek"
+            self.slsk_check.configure(text=text)
+
+        def toggle_soulseek(self):
+            if self.slsk_on.get() and not self.slsk_ready():
+                self.slsk_on.set(False)
+                self.open_soulseek()
+                return
+            self.settings["slsk_enabled"] = self.slsk_on.get()
+            save_settings(self.settings)
+            self.refresh_soulseek()
+
+        def soulseek_share_dir(self, dest=None):
+            if not self.settings.get("slsk_share", True):
+                return None
+            return Path(dest or Path(self.folder.get()).expanduser())
+
+        def get_soulseek(self, dest):
+            """The running Soulseek session (started if needed). Called from worker threads."""
+            share = self.soulseek_share_dir(dest)
+            key = (self.settings.get("slsk_user"), self.settings.get("slsk_pass"), str(share) if share else None)
+            with self.slsk_lock:
+                if self.slsk and self.slsk_key == key:
+                    return self.slsk
+                if self.slsk:
+                    self.slsk.stop()
+                    self.slsk = None
+                if share:
+                    share.mkdir(parents=True, exist_ok=True)
+                self.slsk = Soulseek(key[0], key[1], share).start()
+                self.slsk_key = key
+                return self.slsk
+
+        def on_close(self):
+            if self.slsk:
+                threading.Thread(target=self.slsk.stop, daemon=True).start()
+            self.root.after(300, self.root.destroy)
+
+        def open_soulseek(self):
+            if self.slsk_win is not None and self.slsk_win.winfo_exists():
+                self.slsk_win.lift()
+                return
+            win = self.slsk_win = tk.Toplevel(self.root)
+            win.title("Soulseek (lossless FLAC)")
+            win.transient(self.root)
+            win.resizable(False, False)
+            frm = ttk.Frame(win, padding=18)
+            frm.pack(fill="both", expand=True)
+            wrap = 470
+            ttk.Label(frm, text="Get lossless FLACs from Soulseek",
+                      font=("TkDefaultFont", 13, "bold")).grid(row=0, column=0, columnspan=2, sticky="w")
+            ttk.Label(frm, wraplength=wrap, justify="left", foreground="gray", text=(
+                "When this is on, every SoundCloud track is also searched on Soulseek, a music file-sharing "
+                f"network. A matching FLAC is saved in a \"{FLAC_FOLDER}\" folder inside your download folder, "
+                "next to the MP3s. Many tracks, especially SoundCloud-only edits, won't be found, and "
+                "downloads from other people can be slow.")).grid(row=1, column=0, columnspan=2, sticky="w",
+                                                                   pady=(4, 12))
+            user = tk.StringVar(value=self.settings.get("slsk_user", ""))
+            pw = tk.StringVar(value=self.settings.get("slsk_pass", ""))
+            share = tk.BooleanVar(value=self.settings.get("slsk_share", True))
+            ttk.Label(frm, text="Username").grid(row=2, column=0, sticky="w", pady=3)
+            user_entry = ttk.Entry(frm, textvariable=user, width=32)
+            user_entry.grid(row=2, column=1, sticky="ew", pady=3)
+            ttk.Label(frm, text="Password").grid(row=3, column=0, sticky="w", pady=3)
+            ttk.Entry(frm, textvariable=pw, show="•", width=32).grid(row=3, column=1, sticky="ew", pady=3)
+            add_edit_menu(user_entry)
+            ttk.Label(frm, wraplength=wrap, justify="left", foreground="gray", text=(
+                "No account? Just choose a new username and password: Soulseek creates the account the first "
+                "time you connect. Check the spelling, because a typo quietly creates a different account."
+            )).grid(row=4, column=0, columnspan=2, sticky="w", pady=(2, 10))
+            ttk.Checkbutton(frm, variable=share, text="Share my download folder with other Soulseek users"
+                            ).grid(row=5, column=0, columnspan=2, sticky="w")
+            ttk.Label(frm, wraplength=wrap, justify="left", foreground="gray", text=(
+                "Recommended: many Soulseek users refuse people who share nothing. Sharing only happens while "
+                "this app is open. Only share music you have the right to share."
+                + ("\nYour Mac may ask whether Python may accept incoming connections: click Allow."
+                   if sys.platform == "darwin" else
+                   "\nWindows may ask to allow Python through the firewall: click Allow."
+                   if sys.platform == "win32" else "")
+            )).grid(row=6, column=0, columnspan=2, sticky="w", pady=(2, 10))
+            status = tk.StringVar()
+            ttk.Label(frm, textvariable=status, wraplength=wrap, justify="left").grid(
+                row=7, column=0, columnspan=2, sticky="w")
+            btns = ttk.Frame(frm)
+            btns.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+
+            def store():
+                u, p = user.get().strip(), pw.get()
+                if not u or not p:
+                    status.set("Enter a username and a password.")
+                    return False
+                self.settings.update(slsk_user=u, slsk_pass=p, slsk_share=share.get())
+                save_settings(self.settings)
+                return True
+
+            def test():
+                if not store():
+                    return
+                status.set("Connecting to Soulseek…")
+                test_btn.configure(state="disabled")
+
+                def work():
+                    try:
+                        self.get_soulseek(None)
+                        msg = (f"Connected as {self.settings['slsk_user']}. "
+                               "(If this username was new, the account now exists.)")
+                    except SoulseekError as e:
+                        msg = str(e)
+                    except Exception as e:
+                        msg = f"Couldn't connect: {e}"
+                    self.q.put(("slsk_status", msg))
+                threading.Thread(target=work, daemon=True).start()
+
+            def save():
+                if not store():
+                    return
+                self.slsk_on.set(True)
+                self.settings["slsk_enabled"] = True
+                save_settings(self.settings)
+                self.refresh_soulseek()
+                win.destroy()
+
+            test_btn = ttk.Button(btns, text="Test connection", command=test)
+            test_btn.pack(side="left")
+            ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="right")
+            ttk.Button(btns, text="Save and turn on", command=save).pack(side="right", padx=(0, 8))
+            win.slsk_status = lambda text: (status.set(text), test_btn.configure(state="normal"))
+            user_entry.focus_set()
+
+        def on_slsk_status(self, text):
+            if self.slsk_win is not None and self.slsk_win.winfo_exists():
+                self.slsk_win.slsk_status(text)
+
+        def soulseek_target(self, info, dest, i, meta):
+            title = str(meta.get("title") or f"Track {i}")
+            user = str(meta.get("username") or "")
+            name = title if re.search(r"\s[-–—]\s", title) or not user else f"{user} - {title}"
+            folder = dest / FLAC_FOLDER
+            if info["playlist"]:
+                folder = folder / safe_filename(info["title"], "Playlist")
+                name = f"{i:0{len(str(info['count']))}d}. {name}"
+            return folder / f"{safe_filename(name)}.flac"
+
+        def soulseek_track(self, info, dest, i, results):
+            """Try to get a FLAC for track i; logs the outcome and records it in results."""
+            meta = (info.get("meta") or {}).get(i)
+            if not meta:
+                results.append((i, "skipped", None))
+                return
+            target = self.soulseek_target(info, dest, i, meta)
+            label = target.stem
+            if target.exists():
+                results.append((i, "found", target))
+                self.q.put(("log", f"♫ FLAC already downloaded: {label}"))
+                return
+            try:
+                session = self.get_soulseek(dest)
+            except Exception as e:
+                results.append((i, "error", None))
+                self.q.put(("log", f"✗ Soulseek: {e}"))
+                return
+            try:
+                path, peer = session.fetch_flac(meta, target)
+                results.append((i, "found", path))
+                self.q.put(("log", f"♫ FLAC from Soulseek: {label} ({path.stat().st_size / 1e6:.0f} MB, from {peer})"))
+            except SoulseekError as e:
+                results.append((i, "missing", None))
+                self.q.put(("log", f"– No FLAC for {label}: {e}"))
+            except Exception as e:
+                results.append((i, "missing", None))
+                self.q.put(("log", f"– No FLAC for {label}: {type(e).__name__}: {e}"))
 
         # ---- account
 
@@ -1296,6 +1805,13 @@ def main():
                 info = probe(url, token)
                 info["url"] = url
                 info["token"] = token
+                info["soulseek"] = bool(self.settings.get("slsk_enabled") and self.slsk_ready())
+                if info["soulseek"]:
+                    try:
+                        info["meta"] = track_metadata(info, token)
+                    except Exception as e:
+                        info["meta"] = {}
+                        self.q.put(("log", f"(Couldn't read track details for Soulseek: {e})"))
                 self.q.put(("probed", info))
             except Exception as e:
                 self.q.put(("error", friendly_reason(str(e), bool(token))))
@@ -1307,8 +1823,9 @@ def main():
             dest = Path(self.folder.get()).expanduser()
             what = f"{info['count']} tracks" if info["playlist"] else "1 track"
             by = f"\nby {info['by']}" if info["by"] else ""
+            extra = "\n+ lossless FLACs from Soulseek when found" if info.get("soulseek") else ""
             ok = messagebox.askyesno("Confirm download",
-                                     f"{info['title']}{by}\n\n{what} as MP3\n\nSave to:\n{dest}\n\nDownload now?")
+                                     f"{info['title']}{by}\n\n{what} as MP3{extra}\n\nSave to:\n{dest}\n\nDownload now?")
             if not ok:
                 self.set_busy(False, "Cancelled.")
                 return
@@ -1332,11 +1849,14 @@ def main():
             archive = dest / "scdl_archive.txt"
             url, token = info["url"], info.get("token")
             failures = []                       # dicts: index, name, reason, retryable
+            flac_results = []                   # (index, "found"|"missing"|"error"|"skipped", path)
 
             def fetch(i):
                 item = i if info["playlist"] else None
                 r = run(scdl_cmd(scdl, url, dest, archive, item, token))
                 err = r.stderr or ""
+                if info.get("soulseek"):
+                    self.soulseek_track(info, dest, i, flac_results)
                 if r.returncode == 0 and "ERROR:" not in err:
                     return i, None
                 name = info["titles"].get(i) or lookup_title(url, item, token) or f"Track #{i}"
@@ -1358,7 +1878,8 @@ def main():
 
             # Anything that came down as M4A/Opus/etc. gets converted to MP3.
             to_convert = [p for p in dest.rglob("*")
-                          if p.is_file() and p.suffix.lower() in NON_MP3_AUDIO and p.stat().st_mtime >= started]
+                          if p.is_file() and p.suffix.lower() in NON_MP3_AUDIO and p.stat().st_mtime >= started
+                          and p.relative_to(dest).parts[0] != FLAC_FOLDER]     # Soulseek FLACs stay FLAC
             renamed = []
             if to_convert:
                 self.q.put(("phase", (f"Converting {len(to_convert)} file(s) to MP3…", len(to_convert))))
@@ -1379,10 +1900,16 @@ def main():
 
             # Shrink album art on everything this run produced, so rekordbox imports cleanly.
             new_mp3s = [p for p in dest.rglob("*.mp3") if p.is_file() and p.stat().st_mtime >= started]
-            failures += self.resize_art(new_mp3s, workers)
+            new_flacs = [p for _, state, p in flac_results if state == "found" and p and p.exists()
+                         and p.stat().st_mtime >= started]
+            failures += self.resize_art(new_mp3s + new_flacs, workers)
 
             failures.sort(key=lambda f: (f["index"] is None, f["index"] or 0, f["name"].lower()))
-            self.q.put(("finished", {"info": info, "dest": dest, "total": total, "failures": failures}))
+            flac = None
+            if info.get("soulseek"):
+                flac = {"found": sum(1 for _, st, _ in flac_results if st == "found"), "total": len(items)}
+            self.q.put(("finished", {"info": info, "dest": dest, "total": total, "failures": failures,
+                                     "flac": flac}))
 
         def resize_art(self, mp3s, workers):
             """Run fix_cover over files with progress; returns failure entries for the report."""
@@ -1477,10 +2004,15 @@ def main():
             dl_failed = [f for f in failures if f["retryable"]]
             ok = total - len(dl_failed)
 
+            flac = result.get("flac")
+            flac_note = (f"\nLossless FLAC found on Soulseek for {flac['found']} of {flac['total']} "
+                         f"(in the \"{FLAC_FOLDER}\" folder)." if flac else "")
+            if flac:
+                self.write(flac_note.strip())
             if not failures:
                 report_file.unlink(missing_ok=True)      # clear a stale report from an earlier run
-                self.set_busy(False, f"All {total} downloaded as MP3.")
-                if messagebox.askyesno("Done", f"All {total} downloaded as MP3.\n\nOpen the folder?"):
+                self.set_busy(False, f"All {total} downloaded as MP3." + (" " + flac_note.strip() if flac else ""))
+                if messagebox.askyesno("Done", f"All {total} downloaded as MP3.{flac_note}\n\nOpen the folder?"):
                     open_folder(dest)
                 return
 

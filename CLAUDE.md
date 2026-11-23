@@ -86,6 +86,32 @@ ffmpeg comes from the `imageio-ffmpeg` wheel and is linked as `bin/ffmpeg` on `P
 - Known limits: Safari is blocked by macOS privacy protections, and Chrome/Edge on Windows lock their cookies.
 - The manual paste-token path is the fallback.
 
+## Soulseek (optional FLAC lookup, desktop app only)
+
+The section `# Soulseek (lossless FLAC)` in `src/soundcloud_downloader.py` uses **aioslsk** (in `PACKAGES`, GPL-3.0).
+
+**How it runs:**
+- `Soulseek` runs a single client on its own asyncio loop thread. Worker threads call into it with `_call()` (`run_coroutine_threadsafe`).
+- One session is shared and kept while the window is open (`App.get_soulseek`), so sharing works. It's restarted if the login or the shared folder changes.
+- It only shares the "Save to" folder when `slsk_share` is on.
+
+**Per track:**
+- `App.download → fetch(i)` runs scdl first, then `soulseek_track()`.
+- Matching needs SoundCloud metadata. `probe()` returns track `ids`, and `track_metadata()` fills in title, artist and duration through soundcloud-v2 (installed with scdl).
+- `score_flac()` filters by title words in the file name and artist words anywhere in the path. It requires the same version words (remix, edit, live…) on both sides, and a duration within ±4 s when both sides report one.
+- It tries the best file from up to 3 different peers.
+
+**Downloads:**
+- Files are written to `APP_DIR/soulseek-incoming/`, then moved to `<dest>/FLAC/[playlist]/[NN. ]Artist - Title.flac`.
+- aioslsk may reset a transfer's `local_path`, so its `download` dir is pointed at that staging folder too.
+- The MP3 conversion step skips anything under `<dest>/FLAC/`, because `NON_MP3_AUDIO` includes `.flac`. FLACs do get the album-art resize (`fix_cover` handles both formats).
+
+**Etiquette:** searches are spaced at least 2 s apart, there's one download per peer at a time, and abandoned transfers are `remove()`d.
+
+**Testing:**
+- Login creates accounts automatically, so test with a throwaway `scdtest<hex>` account, a fake `HOME`, and an empty shared folder.
+- Prefer freely licensed music as the download target. Nine Inch Nails' *Ghosts I–IV* (CC BY-NC-SA) is widely shared.
+
 ## Browser extension (`extension/`)
 
 A separate Chrome + Firefox (Manifest V3) port of the same features. It has no server: the extension's host permissions let it call SoundCloud directly, and ffmpeg.wasm does the MP3 conversion. Commands, the code map and its known pitfalls are in `extension/README.md`. In short:

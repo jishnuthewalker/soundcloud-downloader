@@ -24,6 +24,12 @@ When it says *All set!*, the app opens. After that, open **SoundCloud Downloader
 
 **Prefer a download?** Get `SoundCloud-Downloader.zip` from the [latest release](../../releases/latest) and follow *READ ME FIRST.txt* inside it.
 
+## Lossless FLAC from Soulseek (optional, desktop app)
+
+Turn on **Also look for lossless FLACs on Soulseek** and enter a Soulseek login. A new username creates an account automatically. Every track is then also searched on Soulseek, and a matching FLAC is saved in a `FLAC` folder next to the MP3s.
+
+A file only counts as a match when its name, artist and length agree with the SoundCloud track, and remixes are never swapped for originals. While the app is open it shares your download folder (this can be turned off).
+
 ## Browser extension (in development)
 
 `extension/` contains a Chrome + Firefox version of the same features. Nothing to install besides the extension, and sign-in uses your browser's SoundCloud login. It isn't published yet. See [extension/README.md](extension/README.md).
@@ -51,3 +57,7 @@ This needs the [GitHub CLI](https://cli.github.com/), logged in. Every installed
 Anyone who can publish releases here can push code to every installed copy, so keep two-factor authentication on for this GitHub account.
 
 `python3 build.py` on its own builds into `dist/` without publishing. To test updates locally, set `SCD_RELEASE_URL` to a local web server that serves `dist/release/`.
+
+## License
+
+GPL-3.0-or-later (see [LICENSE](LICENSE)). The app uses aioslsk (GPL-3.0) and the browser extension bundles ffmpeg.wasm (GPL-2.0-or-later).

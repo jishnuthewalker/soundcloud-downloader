@@ -76,7 +76,7 @@ USING IT
 -------------------------------------------------------------------------------
 1. On SoundCloud, open the song, playlist or profile you want and copy its link
    (click Share > Copy link, or copy the address from your browser).
-2. In the app, click Paste, then "Download MP3s".
+2. In the app, click Paste, then "Download".
 3. It tells you what it found and asks before downloading.
 4. When it's done, it can open the folder for you. Songs go to
    Music > SoundCloud unless you choose another folder with Browse.
@@ -113,6 +113,33 @@ the steps to copy your sign-in token from the browser and paste it in.
 Your password is never seen or stored by this app. It only keeps the sign-in
 token (on this computer, readable only by you). Click "Sign out" in the app to
 remove it. If downloads say your sign-in expired, sign out and sign in again.
+
+
+-------------------------------------------------------------------------------
+LOSSLESS FLAC FROM SOULSEEK (OPTIONAL)
+-------------------------------------------------------------------------------
+The app can also look for a lossless FLAC of every track on Soulseek, a music
+file-sharing network. When it finds a good match, the FLAC is saved in a
+"FLAC" folder inside your download folder, next to the MP3s. You always get
+the MP3 too.
+
+1. Tick "Also look for lossless FLACs on Soulseek" (or click Settings...).
+2. Enter a Soulseek username and password. No account? Just make one up:
+   Soulseek creates it the first time you connect. Check the spelling, because
+   a typo quietly creates a different account.
+3. Click "Test connection", then "Save and turn on".
+
+Good to know:
+  - Many tracks, especially SoundCloud-only edits and remixes, won't be found.
+    It only picks files whose name, artist and length match the track, and
+    never swaps a remix for the original.
+  - Downloads come from other people's computers and can be slow. If someone's
+    queue doesn't move within 2 minutes, it tries someone else.
+  - The app shares your download folder with other Soulseek users while it's
+    open (many users refuse people who share nothing). You can turn this off
+    in Settings. Only share music you have the right to share.
+  - Your computer may ask whether Python may accept incoming connections:
+    click Allow.
 
 
 -------------------------------------------------------------------------------

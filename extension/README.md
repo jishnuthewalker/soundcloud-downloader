@@ -53,6 +53,6 @@ Things to know before changing the code:
 - **`ffmpeg.writeFile` empties the data you pass it** (it hands the buffer over to its worker). Pass a copy if you need the data again.
 - **Never use `audio/mpegurl` (`abr_*`) streams.** They're adaptive playlists that SoundCloud refuses to open for this kind of request. Only `audio/mpeg` streams count as MP3.
 
-## License note
+## License
 
-`@ffmpeg/core` is GPL-2.0-or-later. A published build bundles it, so the extension must be distributed under a GPL-compatible license, with its source available. This repo doesn't have a license yet.
+GPL-3.0-or-later, like the rest of the repo (see `../LICENSE`). This is required because the bundled `@ffmpeg/core` is GPL-2.0-or-later. Store submissions must keep the source available; this repo provides it.
