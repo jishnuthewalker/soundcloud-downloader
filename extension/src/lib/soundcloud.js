@@ -170,16 +170,30 @@ function userPage(url) {
   return null;
 }
 
+/** Share links (https://on.soundcloud.com/AbC123) redirect to the real address; follow them. */
+export async function expandShortUrl(url, { signal } = {}) {
+  if (new URL(url).hostname.toLowerCase() !== 'on.soundcloud.com') return url;
+  try {
+    const res = await fetch(url, { credentials: 'omit', signal });
+    const full = cleanUrl(res.url);
+    return full && new URL(full).hostname !== 'on.soundcloud.com' ? full : url;
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    return url;
+  }
+}
+
 /** Work out what a link points to. Returns {title, by, folder, album, playlist, tracks}. */
 export async function lookup(client, url, { signal } = {}) {
+  url = await expandShortUrl(url, { signal });
   const page = userPage(url);
   const obj = await client.resolve(page ? page.profile : url, { signal });
   if (obj.kind === 'track') {
-    return { title: obj.title, by: obj.user?.username || '', folder: '', album: '', playlist: false, tracks: [obj] };
+    return { url, title: obj.title, by: obj.user?.username || '', folder: '', album: '', playlist: false, tracks: [obj] };
   }
   if (obj.kind === 'playlist') {
     return {
-      title: obj.title, by: obj.user?.username || '', folder: obj.title, album: obj.title,
+      url, title: obj.title, by: obj.user?.username || '', folder: obj.title, album: obj.title,
       playlist: true, tracks: await client.playlistTracks(obj, { signal }),
     };
   }
@@ -197,7 +211,7 @@ export async function lookup(client, url, { signal } = {}) {
     }
     const title = `${obj.username} · ${which.label}`;
     return {
-      title, by: obj.username, folder: `${obj.username} - ${which.label}`, album: '',
+      url, title, by: obj.username, folder: `${obj.username} - ${which.label}`, album: '',
       playlist: true, tracks: await client.fillTracks(tracks, { signal }),
     };
   }

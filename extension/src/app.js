@@ -182,6 +182,7 @@ async function start(urlOverride) {
     const job = await lookup(client(), url, { signal: state.abort.signal });
     if (!job.tracks.length) throw new SoundCloudError('That link has no downloadable tracks (it may be empty or private).');
     state.job = job;
+    if (job.url) $('link').value = job.url;       // show the full address for short share links
     confirmJob(job);
   } catch (e) {
     setBusy(false, e.name === 'AbortError' ? 'Stopped.' : `Couldn't look up that link: ${reasonOf(e)}`);

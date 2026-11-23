@@ -1,7 +1,7 @@
 {
   "name": "soundcloud-downloader-extension",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "SoundCloud Downloader browser extension (Chrome + Firefox)",
   "type": "module",
   "scripts": {

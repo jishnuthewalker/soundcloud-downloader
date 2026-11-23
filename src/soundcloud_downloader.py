@@ -53,7 +53,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-__version__ = "2.2.0"     # bump this for every release (build.py reads it)
+__version__ = "2.2.1"     # bump this for every release (build.py reads it)
 REPO = "jishnuthewalker/soundcloud-downloader"   # GitHub repo that publishes updates
 # SCD_RELEASE_URL lets you test updates from a local folder or use a mirror.
 RELEASE_URL = (os.environ.get("SCD_RELEASE_URL") or f"https://github.com/{REPO}/releases/latest/download").rstrip("/") + "/"
@@ -211,16 +211,19 @@ def vtuple(version):
         return (0,)
 
 
-def http_get(url, timeout=20):
-    """GET a URL; returns the body bytes."""
+def ssl_context():
     import ssl
     try:
         import certifi                    # installed with scdl; the private Python may lack system certs
-        ctx = ssl.create_default_context(cafile=certifi.where())
+        return ssl.create_default_context(cafile=certifi.where())
     except ImportError:
-        ctx = ssl.create_default_context()
+        return ssl.create_default_context()
+
+
+def http_get(url, timeout=20):
+    """GET a URL; returns the body bytes."""
     req = urllib.request.Request(url, headers={"User-Agent": f"SoundCloudDownloader/{__version__}"})
-    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+    with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as r:
         return r.read()
 
 
@@ -229,13 +232,7 @@ def github_latest_tag(repo):
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args, **kwargs):
             return None
-    import ssl
-    try:
-        import certifi
-        ctx = ssl.create_default_context(cafile=certifi.where())
-    except ImportError:
-        ctx = ssl.create_default_context()
-    opener = urllib.request.build_opener(NoRedirect, urllib.request.HTTPSHandler(context=ctx))
+    opener = urllib.request.build_opener(NoRedirect, urllib.request.HTTPSHandler(context=ssl_context()))
     req = urllib.request.Request(f"https://github.com/{repo}/releases/latest", method="HEAD",
                                  headers={"User-Agent": f"SoundCloudDownloader/{__version__}"})
     try:
@@ -408,6 +405,23 @@ def clean_url(raw):
     if not parts.path.strip("/"):
         return None
     return urlunsplit(("https", parts.netloc, parts.path.rstrip("/"), "", ""))
+
+
+def expand_short_url(url):
+    """Share links like https://on.soundcloud.com/AbC123 redirect to the real track/playlist address,
+    which scdl needs. Returns the cleaned full URL (or the original if it can't be expanded)."""
+    if urlsplit(url).netloc.lower() != "on.soundcloud.com":
+        return url
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=20, context=ssl_context()) as r:
+            final = r.geturl()
+    except urllib.error.HTTPError as e:
+        final = e.headers.get("Location") or e.geturl()
+    except Exception:
+        return url
+    full = clean_url(final)
+    return full if full and urlsplit(full).netloc.lower() != "on.soundcloud.com" else url
 
 
 def ytdlp_auth(token):
@@ -1802,6 +1816,10 @@ def main():
                     r = run([console_python(), "-m", "pip", "install", "--upgrade", *PACKAGES])
                     if r.returncode != 0 or not find_scdl():
                         raise RuntimeError("Couldn't install scdl: " + last_line(r.stderr))
+                full = expand_short_url(url)
+                if full != url:
+                    self.q.put(("expanded", full))
+                    url = full
                 info = probe(url, token)
                 info["url"] = url
                 info["token"] = token
@@ -1815,6 +1833,9 @@ def main():
                 self.q.put(("probed", info))
             except Exception as e:
                 self.q.put(("error", friendly_reason(str(e), bool(token))))
+
+        def on_expanded(self, url):
+            self.url.set(url)
 
         def on_probed(self, info):
             if info["count"] == 0:
