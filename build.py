@@ -109,6 +109,22 @@ def sh(*cmd, check=True):
     return subprocess.run(cmd, cwd=ROOT, check=check, capture_output=True, text=True)
 
 
+def release_notes(repo):
+    raw = f"https://raw.githubusercontent.com/{repo}/main"
+    return (
+        "## Install\n\n"
+        "**Mac:** open Terminal (⌘ Space, type *Terminal*, Return), paste this and press Return:\n"
+        f"```\ncurl -fsSL {raw}/install.sh | bash\n```\n"
+        "**Windows:** press **Win+R**, paste this and press Enter:\n"
+        f"```\npowershell -ExecutionPolicy Bypass -c \"irm {raw}/install.ps1 | iex\"\n```\n"
+        "**Linux:** paste the Mac line into a terminal.\n\n"
+        f"Prefer a download? Get **{ZIP_NAME}** below and follow *READ ME FIRST.txt* inside it.\n\n"
+        "**Already installed?** Nothing to do: the app updates itself the next time it's opened.\n\n"
+        "_The other files below (`setup-*`, `soundcloud_downloader.py`, `latest.json`) are used by automatic "
+        "updates. Don't download them directly: browsers remove their permission to run._"
+    )
+
+
 def release(version, repo):
     tag = f"v{version}"
     if sh("git", "status", "--porcelain").stdout.strip():
@@ -119,8 +135,7 @@ def release(version, repo):
     assets = [str(p) for p in sorted(RELEASE.iterdir())]
     sh("gh", "release", "create", tag, *assets, "--repo", repo, "--target", sh("git", "rev-parse", "HEAD").stdout.strip(),
        "--title", f"SoundCloud Downloader {version}",
-       "--notes", f"Download **{ZIP_NAME}** below and open *READ ME FIRST.txt*.\n\n"
-                  "Already installed? Nothing to do: the app updates itself the next time it's opened.")
+       "--notes", release_notes(repo))
     print(f"Published {tag}: https://github.com/{repo}/releases/tag/{tag}")
 
 
