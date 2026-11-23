@@ -2,7 +2,27 @@
 
 A small desktop app for Mac, Windows and Linux. Paste a SoundCloud link (track, playlist or profile) and it saves everything as MP3, with album art sized for DJ software. Optional sign-in adds your likes, private tracks and Go+ tracks.
 
-**To install:** download `SoundCloud-Downloader.zip` from the [latest release](../../releases/latest) and follow *READ ME FIRST.txt*. No admin password needed.
+## Install
+
+No admin password needed, and no security warnings with these one-liners.
+
+**Mac:** open Terminal (press ⌘ Space, type *Terminal*, press Return), paste this line and press Return:
+
+```
+curl -fsSL https://raw.githubusercontent.com/jishnuthewalker/soundcloud-downloader/main/install.sh | bash
+```
+
+**Windows:** press **Win+R**, paste this line and press Enter:
+
+```
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/jishnuthewalker/soundcloud-downloader/main/install.ps1 | iex"
+```
+
+**Linux:** paste the Mac line into a terminal.
+
+When it says *All set!*, the app opens. After that, open **SoundCloud Downloader** like any other app. It keeps itself up to date.
+
+**Prefer a download?** Get `SoundCloud-Downloader.zip` from the [latest release](../../releases/latest) and follow *READ ME FIRST.txt* inside it.
 
 ## How it works
 
@@ -13,6 +33,7 @@ A small desktop app for Mac, Windows and Linux. Paste a SoundCloud link (track, 
   3. Installs the newest Python 3.12 patch release.
   4. Upgrades scdl, yt-dlp, imageio-ffmpeg and all their dependencies.
 - An outdated setup file fetches the newest one from the latest release before it runs.
+- `install.sh` / `install.ps1` are what the one-liners run. They download the newest setup file from the latest release, check it against `latest.json`, and run it.
 
 ## Releasing a new version
 

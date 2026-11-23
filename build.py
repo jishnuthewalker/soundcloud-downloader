@@ -55,6 +55,9 @@ def build():
     app = lf((SRC / "soundcloud_downloader.py").read_text(encoding="utf-8"))
     version, repo = constant(app, "__version__"), constant(app, "REPO")
     python = constant(app, "PYTHON_MINOR")
+    for name in ("install.sh", "install.ps1"):      # one-line installers live in the repo, not the release
+        if repo not in (ROOT / name).read_text(encoding="utf-8"):
+            sys.exit(f"{name} doesn't point at {repo}; update it to match REPO.")
     shutil.rmtree(DIST, ignore_errors=True)
     out_dir = DIST / FOLDER
     out_dir.mkdir(parents=True)
